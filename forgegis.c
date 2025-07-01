@@ -144,12 +144,13 @@ void x25519_shared_secret(const uint8_t private_key[32], const uint8_t public_ke
 
 // ===== KEY DERIVATION FUNCTION =====
 void pbkdf2_simple(const char *password, const uint8_t salt[16], uint8_t key[32]) {
-    uint8_t hash_input[256];
     size_t pass_len = strlen(password);
-    
+    if (pass_len > 240) pass_len = 240; // Truncate if too long
+
+    uint8_t hash_input[256];
     memcpy(hash_input, password, pass_len);
     memcpy(hash_input + pass_len, salt, 16);
-    
+
     // Multiple rounds of hashing
     uint8_t temp[32];
     blake2b_hash(hash_input, pass_len + 16, temp);
@@ -192,6 +193,7 @@ int encrypt_data(const char *password, const uint8_t *plaintext, size_t len,
     uint8_t final_key[CHACHA20_KEY_SIZE];
     blake2b_hash(shared_secret, X25519_KEY_SIZE, final_key);
     
+    if (len > UINT32_MAX) return -1;
     header.data_length = (uint32_t)len;
     
     // Allocate output buffer
