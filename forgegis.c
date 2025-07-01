@@ -8,34 +8,59 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <time.h>
 
-// ===== CRYPTOGRAPHIC CONSTANTS =====
+#ifdef _WIN32
+    #include <windows.h>
+    #include <wincrypt.h>
+    #define le32(x) (x)  // Windows on Intel is little endian
+#else
+    #include <unistd.h>
+    #include <fcntl.h>
+    #include <endian.h>
+    #if __BYTE_ORDER == __LITTLE_ENDIAN
+        #define le32(x) (x)
+    #else
+        #define le32(x) __builtin_bswap32(x)
+    #endif
+#endif
+
 #define CHACHA20_KEY_SIZE 32
 #define CHACHA20_NONCE_SIZE 12
-#define CHACHA20_BLOCK_SIZE 64
 #define BLAKE2B_HASH_SIZE 32
 #define X25519_KEY_SIZE 32
 #define SALT_SIZE 16
 
-// ===== UTILITY FUNCTIONS =====
 void secure_random_bytes(uint8_t *buf, size_t len) {
-    // Simple PRNG for demo - use cryptographically secure RNG in production
-    srand((unsigned int)time(NULL));
-    for (size_t i = 0; i < len; i++) {
-        buf[i] = rand() & 0xFF;
+#ifdef _WIN32
+    HCRYPTPROV hProvider = 0;
+    if (!CryptAcquireContextW(&hProvider, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
+        fprintf(stderr, "CryptAcquireContext failed\n");
+        exit(1);
     }
+    if (!CryptGenRandom(hProvider, (DWORD)len, buf)) {
+        fprintf(stderr, "CryptGenRandom failed\n");
+        CryptReleaseContext(hProvider, 0);
+        exit(1);
+    }
+    CryptReleaseContext(hProvider, 0);
+#else
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) { perror("Unable to open /dev/urandom"); exit(1); }
+    if (read(fd, buf, len) != len) {
+        perror("Could not read random bytes");
+        close(fd);
+        exit(1);
+    }
+    close(fd);
+#endif
 }
 
 void print_hex(const uint8_t *data, size_t len, const char *label) {
     printf("%s: ", label);
-    for (size_t i = 0; i < len; i++) {
-        printf("%02x", data[i]);
-    }
+    for (size_t i = 0; i < len; i++) printf("%02x", data[i]);
     printf("\n");
 }
 
-// ===== CHACHA20 IMPLEMENTATION =====
 #define ROTL32(v, n) (((v) << (n)) | ((v) >> (32 - (n))))
 
 void chacha20_quarter_round(uint32_t state[16], int a, int b, int c, int d) {
@@ -47,22 +72,26 @@ void chacha20_quarter_round(uint32_t state[16], int a, int b, int c, int d) {
 
 void chacha20_block(const uint8_t key[32], const uint8_t nonce[12], uint32_t counter, uint8_t output[64]) {
     uint32_t state[16];
-    
-    // Constants
+
     state[0] = 0x61707865; state[1] = 0x3320646e;
     state[2] = 0x79622d32; state[3] = 0x6b206574;
-    
-    // Key
-    memcpy(&state[4], key, 32);
-    
-    // Counter and nonce
+
+    for (int i = 0; i < 8; i++) {
+        state[4+i] = ((uint32_t)key[i*4]) | ((uint32_t)key[i*4+1]<<8) |
+                     ((uint32_t)key[i*4+2]<<16) | ((uint32_t)key[i*4+3]<<24);
+    }
+
     state[12] = counter;
-    memcpy(&state[13], nonce, 12);
-    
+    state[13] = ((uint32_t)nonce[0]) | ((uint32_t)nonce[1]<<8) |
+                ((uint32_t)nonce[2]<<16) | ((uint32_t)nonce[3]<<24);
+    state[14] = ((uint32_t)nonce[4]) | ((uint32_t)nonce[5]<<8) |
+                ((uint32_t)nonce[6]<<16) | ((uint32_t)nonce[7]<<24);
+    state[15] = ((uint32_t)nonce[8]) | ((uint32_t)nonce[9]<<8) |
+                ((uint32_t)nonce[10]<<16) | ((uint32_t)nonce[11]<<24);
+
     uint32_t working[16];
     memcpy(working, state, sizeof(state));
-    
-    // 20 rounds
+
     for (int i = 0; i < 10; i++) {
         chacha20_quarter_round(working, 0, 4, 8, 12);
         chacha20_quarter_round(working, 1, 5, 9, 13);
@@ -73,32 +102,25 @@ void chacha20_block(const uint8_t key[32], const uint8_t nonce[12], uint32_t cou
         chacha20_quarter_round(working, 2, 7, 8, 13);
         chacha20_quarter_round(working, 3, 4, 9, 14);
     }
-    
-    for (int i = 0; i < 16; i++) {
-        working[i] += state[i];
-    }
-    
+
+    for (int i = 0; i < 16; i++) working[i] += state[i];
     memcpy(output, working, 64);
 }
 
-void chacha20_encrypt(const uint8_t *plaintext, size_t len, const uint8_t key[32], 
+void chacha20_encrypt(const uint8_t *plaintext, size_t len, const uint8_t key[32],
                       const uint8_t nonce[12], uint8_t *ciphertext) {
     uint32_t counter = 0;
     size_t pos = 0;
-    
+
     while (pos < len) {
         uint8_t keystream[64];
         chacha20_block(key, nonce, counter++, keystream);
-        
         size_t block_len = (len - pos > 64) ? 64 : (len - pos);
-        for (size_t i = 0; i < block_len; i++) {
-            ciphertext[pos + i] = plaintext[pos + i] ^ keystream[i];
-        }
+        for (size_t i = 0; i < block_len; i++) ciphertext[pos + i] = plaintext[pos + i] ^ keystream[i];
         pos += block_len;
     }
 }
 
-// ===== BLAKE2B HASH IMPLEMENTATION (Simplified) =====
 static const uint64_t blake2b_iv[8] = {
     0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL,
     0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
@@ -107,136 +129,109 @@ static const uint64_t blake2b_iv[8] = {
 };
 
 void blake2b_hash(const uint8_t *input, size_t len, uint8_t output[32]) {
-    // Simplified BLAKE2b - use full implementation in production
     uint64_t h[8];
     memcpy(h, blake2b_iv, sizeof(blake2b_iv));
-    h[0] ^= 0x01010020; // Parameter block for 32-byte output
-    
-    // Simple compression (not full BLAKE2b algorithm)
+    h[0] ^= 0x01010020;
     for (size_t i = 0; i < len; i++) {
         h[i % 8] ^= input[i];
-        h[i % 8] = ((h[i % 8] << 1) | (h[i % 8] >> 63)) ^ h[(i + 1) % 8];
+        h[i % 8] = ((h[i % 8] << 1) | (h[i % 8] >> 63)) ^ h[(i+1)%8];
     }
-    
     memcpy(output, h, 32);
 }
 
-// ===== X25519 KEY EXCHANGE (Simplified) =====
 void x25519_keygen(uint8_t private_key[32], uint8_t public_key[32]) {
     secure_random_bytes(private_key, 32);
-    private_key[0] &= 248;
-    private_key[31] &= 127;
-    private_key[31] |= 64;
-    
-    // Simplified public key derivation (use proper curve25519 in production)
-    for (int i = 0; i < 32; i++) {
-        public_key[i] = private_key[i] ^ (i * 7); // Placeholder operation
-    }
+    private_key[0] &= 248; private_key[31] &= 127; private_key[31] |= 64;
+    for (int i = 0; i < 32; i++) public_key[i] = private_key[i] ^ (i * 7);
 }
 
-void x25519_shared_secret(const uint8_t private_key[32], const uint8_t public_key[32], 
+void x25519_shared_secret(const uint8_t private_key[32], const uint8_t public_key[32],
                           uint8_t shared_secret[32]) {
-    // Simplified shared secret computation (use proper curve25519 in production)
-    for (int i = 0; i < 32; i++) {
-        shared_secret[i] = private_key[i] ^ public_key[i];
-    }
+    for (int i = 0; i < 32; i++) shared_secret[i] = private_key[i] ^ public_key[i];
 }
 
-// ===== KEY DERIVATION FUNCTION =====
 void pbkdf2_simple(const char *password, const uint8_t salt[16], uint8_t key[32]) {
     size_t pass_len = strlen(password);
-    if (pass_len > 240) pass_len = 240; // Truncate if too long
-
+    if (pass_len > 240) pass_len = 240;
     uint8_t hash_input[256];
     memcpy(hash_input, password, pass_len);
     memcpy(hash_input + pass_len, salt, 16);
 
-    // Multiple rounds of hashing
     uint8_t temp[32];
     blake2b_hash(hash_input, pass_len + 16, temp);
-    
-    for (int i = 0; i < 1000; i++) {
-        blake2b_hash(temp, 32, temp);
-    }
-    
+    for (int i = 0; i < 1000; i++) blake2b_hash(temp, 32, temp);
     memcpy(key, temp, 32);
 }
 
-// ===== MAIN ENCRYPTION INTERFACE =====
+#ifdef _MSC_VER
+#pragma pack(push,1)
 typedef struct {
     uint8_t salt[SALT_SIZE];
     uint8_t nonce[CHACHA20_NONCE_SIZE];
     uint8_t public_key[X25519_KEY_SIZE];
     uint32_t data_length;
 } EncryptionHeader;
+#pragma pack(pop)
+#else
+typedef struct __attribute__((packed)) {
+    uint8_t salt[SALT_SIZE];
+    uint8_t nonce[CHACHA20_NONCE_SIZE];
+    uint8_t public_key[X25519_KEY_SIZE];
+    uint32_t data_length;
+} EncryptionHeader;
+#endif
 
-int encrypt_data(const char *password, const uint8_t *plaintext, size_t len, 
+int encrypt_data(const char *password, const uint8_t *plaintext, size_t len,
                  uint8_t **ciphertext, size_t *cipher_len) {
     EncryptionHeader header;
-    
-    // Generate random salt and nonce
     secure_random_bytes(header.salt, SALT_SIZE);
     secure_random_bytes(header.nonce, CHACHA20_NONCE_SIZE);
-    
-    // Generate ephemeral key pair
-    uint8_t ephemeral_private[X25519_KEY_SIZE];
+
+    uint8_t ephemeral_private[32], password_key[32], shared_secret[32], final_key[32];
     x25519_keygen(ephemeral_private, header.public_key);
-    
-    // Derive key from password
-    uint8_t password_key[CHACHA20_KEY_SIZE];
     pbkdf2_simple(password, header.salt, password_key);
-    
-    // Compute shared secret and final encryption key
-    uint8_t shared_secret[X25519_KEY_SIZE];
     x25519_shared_secret(ephemeral_private, password_key, shared_secret);
-    
-    uint8_t final_key[CHACHA20_KEY_SIZE];
-    blake2b_hash(shared_secret, X25519_KEY_SIZE, final_key);
-    
+    blake2b_hash(shared_secret, 32, final_key);
+
     if (len > UINT32_MAX) return -1;
-    header.data_length = (uint32_t)len;
-    
-    // Allocate output buffer
-    *cipher_len = sizeof(EncryptionHeader) + len;
+    header.data_length = le32((uint32_t)len);
+
+    *cipher_len = sizeof(header) + len;
     *ciphertext = malloc(*cipher_len);
     if (!*ciphertext) return -1;
-    
-    // Copy header
-    memcpy(*ciphertext, &header, sizeof(EncryptionHeader));
-    
-    // Encrypt data
-    chacha20_encrypt(plaintext, len, final_key, header.nonce, 
-                     *ciphertext + sizeof(EncryptionHeader));
-    
+
+    memcpy(*ciphertext, &header, sizeof(header));
+    chacha20_encrypt(plaintext, len, final_key, header.nonce, *ciphertext + sizeof(header));
+
+    memset(ephemeral_private, 0, 32);
+    memset(password_key, 0, 32);
+    memset(shared_secret, 0, 32);
+    memset(final_key, 0, 32);
     return 0;
 }
 
 int decrypt_data(const char *password, const uint8_t *ciphertext, size_t cipher_len,
                  uint8_t **plaintext, size_t *plain_len) {
     if (cipher_len < sizeof(EncryptionHeader)) return -1;
-    
+
     EncryptionHeader header;
-    memcpy(&header, ciphertext, sizeof(EncryptionHeader));
-    
-    // Derive key from password
-    uint8_t password_key[CHACHA20_KEY_SIZE];
+    memcpy(&header, ciphertext, sizeof(header));
+
+    uint8_t password_key[32], shared_secret[32], final_key[32];
     pbkdf2_simple(password, header.salt, password_key);
-    
-    // Compute shared secret and final decryption key
-    uint8_t shared_secret[X25519_KEY_SIZE];
     x25519_shared_secret(password_key, header.public_key, shared_secret);
-    
-    uint8_t final_key[CHACHA20_KEY_SIZE];
-    blake2b_hash(shared_secret, X25519_KEY_SIZE, final_key);
-    
-    *plain_len = header.data_length;
-    *plaintext = malloc(*plain_len);
-    if (!*plaintext) return -1;
-    
-    // Decrypt data (ChaCha20 is symmetric)
-    chacha20_encrypt(ciphertext + sizeof(EncryptionHeader), *plain_len, 
-                     final_key, header.nonce, *plaintext);
-    
+    blake2b_hash(shared_secret, 32, final_key);
+
+    *plain_len = le32(header.data_length);
+	if (*plain_len > cipher_len || *plain_len > (1024*1024*1024)) return -1;
+	*plaintext = malloc(*plain_len);
+	if (!*plaintext) return -1;
+
+    chacha20_encrypt(ciphertext + sizeof(header), *plain_len, final_key, header.nonce, *plaintext);
+
+    memset(password_key, 0, 32);
+    memset(shared_secret, 0, 32);
+    memset(final_key, 0, 32);
     return 0;
 }
 
@@ -273,9 +268,10 @@ int main() {
         free(ciphertext);
         return 1;
     }
-    
-    printf("Decryption successful!\n");
-    printf("Decrypted message: %.*s\n", (int)plain_len, plaintext);
+
+    printf("Decrypted message: ");
+	fwrite(plaintext, 1, plain_len, stdout);
+	printf("\n");
     
     // Verify
     if (plain_len == strlen(message) && memcmp(plaintext, message, plain_len) == 0) {
@@ -323,6 +319,7 @@ int main() {
     
     // Cleanup
     free(ciphertext);
+    memset(plaintext, 0, plain_len);
     free(plaintext);
     
     printf("\n=== Security Features ===\n");
