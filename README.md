@@ -1,8 +1,6 @@
 
 # 🛡️ Forgegis - Advanced Encryption Software
 
-## 🚀 Minimal Viable Product (MVP) README
-
 **Forgegis** is a lightweight, cross-platform encryption demo in C featuring:
 
 - ChaCha20 stream cipher (256-bit)
