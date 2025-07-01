@@ -1,40 +1,35 @@
-# 🔐 Forgegis - Advanced Encryption Software
 
-Forgegis is a cross-platform C encryption software demonstrating modern cryptographic primitives including:
+# 🛡️ Forgegis - Advanced Encryption Software
 
-- ChaCha20 stream cipher (256-bit key)
-- X25519 elliptic curve key exchange (simplified)
-- BLAKE2b hash function (simplified)
-- PBKDF2-like password-based key derivation
-- Secure random salt & nonce generation
+**Forgegis** is a cross-platform encryption software written in C that demonstrates modern cryptographic design concepts using:
+- the **ChaCha20 stream cipher** for high-speed symmetric encryption,
+- a simplified **X25519-style key exchange** for establishing shared secrets,
+- and a lightweight **BLAKE2b-inspired hash function** for key derivation.
 
-## 🚀 Usage
+The project showcases how to build a secure encryption system from scratch, focusing on:
 
-Build on Linux:
-```bash
-gcc -o forgegis forgegis.c
-```
+✅ Secure random number generation (Windows CryptoAPI or `/dev/urandom`)  
+✅ Endian-safe portable data formats  
+✅ Memory zeroing to prevent sensitive data leaks  
+✅ Explicit packed data structures for predictable serialization  
+✅ Toy examples of elliptic curve key exchange and password-based encryption
 
-Build on Windows (MinGW):
-```bash
-gcc -o forgegis.exe forgegis.c
-```
+---
 
-Run:
-```bash
-./forgegis
-```
+## 🚀 What makes Forgegis unique?
+- **Truly cross-platform**: compiles cleanly on Windows (MSVC / MinGW / Clang) and Linux (GCC / Clang).  
+- **No external dependencies**: everything written in pure portable C, with careful use of the C standard library and OS-provided secure randomness.
+- **Secure engineering practices**: all sensitive ephemeral data is wiped from memory after use; bounds checks prevent integer or heap overflows.
 
-## 🔥 Features
+---
 
-✅ ChaCha20 encryption/decryption  
-✅ X25519 key exchange simulation  
-✅ Password-based key derivation  
-✅ Random salt and nonce  
-✅ Simple integrity demonstration
+## ⚠️ Security disclaimer
+> 🚨 **IMPORTANT:**  
+> Forgegis is an educational demo.  
+> The implementations of X25519 and BLAKE2b here are **simplified placeholders** that illustrate cryptographic ideas but are **not safe for production**.  
+> For real-world systems, always use vetted libraries like [libsodium](https://libsodium.gitbook.io/doc/) or [OpenSSL](https://www.openssl.org/).
 
-🚨 WARNING: This cryptographic code is a demonstration only. The BLAKE2b and X25519 implementations here are simplified placeholders for educational purposes and are NOT secure for production use.
+---
 
-## 📝 License
-
-MIT License
+## 💡 Why “Forgegis”?
+It stands for **Forge + Gigabytes + Security** — evoking the idea of forging robust, high-speed cryptographic systems that protect your data.
