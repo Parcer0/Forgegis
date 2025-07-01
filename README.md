@@ -33,6 +33,8 @@ Run:
 ✅ Random salt and nonce  
 ✅ Simple integrity demonstration
 
+🚨 WARNING: This cryptographic code is a demonstration only. The BLAKE2b and X25519 implementations here are simplified placeholders for educational purposes and are NOT secure for production use.
+
 ## 📝 License
 
 MIT License
